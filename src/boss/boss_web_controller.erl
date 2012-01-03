@@ -361,12 +361,16 @@ process_request(AppInfo, Req, Mode, Url, SessionID) ->
             ok
     end,
     Location = case boss_router:route(RouterPid, Url) of
-        {ok, {Controller, Action, Tokens}} ->
+        {ok, {Application, Controller, Action, Tokens}} when Application =:= AppInfo#boss_app_info.application ->
             {Controller, Action, Tokens};
+        {ok, {OtherApplication, Controller, Action, Tokens}} ->
+            {redirect, {OtherApplication, Controller, Action, Tokens}};
         not_found ->
             case boss_router:handle(RouterPid, 404) of
-                {ok, {Controller, Action, Tokens}} ->
+                {ok, {Application, Controller, Action, Tokens}} when Application =:= AppInfo#boss_app_info.application ->
                     {Controller, Action, Tokens};
+                {ok, {OtherApplication, Controller, Action, Tokens}} ->
+                    {redirect, {OtherApplication, Controller, Action, Tokens}};
                 not_found ->
                     undefined
             end
@@ -374,6 +378,8 @@ process_request(AppInfo, Req, Mode, Url, SessionID) ->
     Result = case Location of
         undefined ->
             {not_found, "The requested page was not found. Additionally, no handler was found for processing 404 errors."};
+        {redirect, _} ->
+            Location;
         _ ->
             case catch load_and_execute(Mode, Location, AppInfo, Req, SessionID) of
                 {'EXIT', Reason} ->
@@ -392,9 +398,9 @@ process_result(_, {not_found, Payload}) ->
 process_result(AppInfo, {redirect, Where}) ->
 	process_result(AppInfo, {redirect, Where, []});
 process_result(AppInfo, {redirect, "http://"++Where, Headers}) ->
-    process_result(AppInfo, {redirect, "/"++string:join(tl(string:tokens(Where, "/")), "/"), Headers});
+    process_result(AppInfo, {redirect_external, "http://"++Where, Headers});
 process_result(AppInfo, {redirect, "https://"++Where, Headers}) ->
-    process_result(AppInfo, {redirect, "/"++string:join(tl(string:tokens(Where, "/")), "/"), Headers});
+    process_result(AppInfo, {redirect_external, "https://"++Where, Headers});
 process_result(_AppInfo, {redirect, {Application, Controller, Action, Params}, Headers}) ->
     RouterPid = boss_web:router_pid(list_to_atom(lists:concat([Application]))),
     URL = boss_router:unroute(RouterPid, Controller, Action, Params),
@@ -402,6 +408,8 @@ process_result(_AppInfo, {redirect, {Application, Controller, Action, Params}, H
     {302, [{"Location", BaseURL ++ URL}, {"Cache-Control", "no-cache"}|Headers], ""};
 process_result(AppInfo, {redirect, Where, Headers}) ->
     {302, [{"Location", AppInfo#boss_app_info.base_url ++ Where}, {"Cache-Control", "no-cache"}|Headers], ""};
+process_result(_, {redirect_external, Where, Headers}) ->
+    {302, [{"Location", Where}, {"Cache-Control", "no-cache"}|Headers], ""};
 process_result(_, {ok, Payload, Headers}) ->
     {200, [{"Content-Type", proplists:get_value("Content-Type", Headers, "text/html")}
             |proplists:delete("Content-Type", Headers)], Payload}.
@@ -577,8 +585,14 @@ process_action_result({{Controller, _, _}, Req, SessionID, LocationTrail}, {acti
     execute_action(process_location(Controller, OtherLocation, AppInfo), AppInfo, Req, SessionID, LocationTrail);
 
 process_action_result({_, Req, SessionID, LocationTrail}, not_found, AppInfo, _) ->
-    NotFoundLocation = boss_router:handle(AppInfo#boss_app_info.router_pid, 404),
-    execute_action(NotFoundLocation, AppInfo, Req, SessionID, LocationTrail);
+    case boss_router:handle(AppInfo#boss_app_info.router_pid, 404) of
+        {ok, {Application, Controller, Action, Params}} when Application =:= AppInfo#boss_app_info.application ->
+            execute_action({Controller, Action, Params}, AppInfo, Req, SessionID, LocationTrail);
+        {ok, {OtherApplication, Controller, Action, Params}} ->
+            {redirect, {OtherApplication, Controller, Action, Params}};
+        not_found ->
+            {not_found, "The requested page was not found. Additionally, no handler was found for processing 404 errors."}
+    end;
 
 process_action_result(Info, {redirect, Where}, AppInfo, AuthInfo) ->
     process_action_result(Info, {redirect, Where, []}, AppInfo, AuthInfo);
@@ -590,6 +604,14 @@ process_action_result(Info, {json, Data}, AppInfo, AuthInfo) ->
 process_action_result(Info, {json, Data, Headers}, AppInfo, AuthInfo) ->
     process_action_result(Info, {output, boss_json:encode(Data, AppInfo#boss_app_info.model_modules),
             [{"Content-Type", proplists:get_value("Content-Type", Headers, "application/json")}
+                |proplists:delete("Content-Type", Headers)]}, AppInfo, AuthInfo);
+
+process_action_result(Info, {jsonp, Callback, Data}, AppInfo, AuthInfo) ->
+    process_action_result(Info, {jsonp, Callback, Data, []}, AppInfo, AuthInfo);
+process_action_result(Info, {jsonp, Callback, Data, Headers}, AppInfo, AuthInfo) ->
+    JsonData  = boss_json:encode(Data, AppInfo#boss_app_info.model_modules),
+    process_action_result(Info, {output, Callback ++ "(" ++ JsonData ++ ");",
+            [{"Content-Type", proplists:get_value("Content-Type", Headers, "application/javascript")}
                 |proplists:delete("Content-Type", Headers)]}, AppInfo, AuthInfo);
 
 process_action_result(Info, {output, Payload}, AppInfo, AuthInfo) ->

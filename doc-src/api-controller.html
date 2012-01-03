@@ -65,10 +65,12 @@ view(<span class="atom">'GET'</span>, [Year, Month]) -&gt;<br />
 <p>A few examples:</p>
 
 <div class="code">
-    {"/", {"hello", "world"{{ "}}" }}.<br />
-    {"/signup", {"account", "create"{{ "}}" }}.<br />
-    {404, {"main", "not_found"{{ "}}" }}.
+    {"/", [{controller, "main"}, {action, "welcome"}]}.<br />
+    {"/signup", [{application, login_app}, {controller, "account"}, {"create"}]}.<br />
+    {404, [{controller, "main"}, {action, "not_found"}]}.
 </div>
+
+<p>Most routes directly render the specified action; however, routing across applications (as in the second example) results in a 302 redirect.</p>
 
 <p>To define a default action for a controller, simply add a <code>default_action</code> attribute to the controller like so:</p>
 
@@ -178,6 +180,18 @@ before_(_) -&gt;<br />
 </div>
 
 <p>Return <code>Data</code> to the client as a JSON object while setting additional HTTP <code>Headers</code>.</p>
+
+<div class="code spec">
+    {jsonp, Callback<span class="typevar">::string()</span>, Data<span class="typevar">::proplist()</span>}
+</div>
+
+<p>Returns <code>Data</code> as a JSONP method call to the client. Performs appropriate serialization if the values in Data contain a BossRecord or a list of BossRecords.</p>
+
+<div class="code spec">
+    {jsonp, Callback<span class="typevar">::string()</span>, Data<span class="typevar">::proplist()</span>, Headers<span class="typevar">::proplist()</span>}
+</div>
+
+<p>Return <code>Data</code> to the client as a JSONP method call (as above) while setting additional HTTP <code>Headers</code>.</p>
 
 <div class="code spec">
     not_found
