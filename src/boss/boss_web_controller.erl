@@ -95,7 +95,7 @@ init(Config) ->
         {ssl_enable,boss_env:get_env(ssl_enable, false)}, {ssl_options,boss_env:get_env(ssl_options, [])}]]),
     error_logger:info_msg("Configured Servers: ~p~n", [ServList]),
     StartServFun =fun (ServerParams) ->
-        {ServerMod, RequestMod, ResponseMod} = case proplists:get_value(server, ServerParams) of
+        {ServerMod, RequestMod, ResponseMod} = case proplists:get_value(engine, ServerParams) of
             mochiweb -> {mochiweb_http, mochiweb_request_bridge, mochiweb_response_bridge};
             misultin -> {misultin, misultin_request_bridge, misultin_response_bridge}
         end,
