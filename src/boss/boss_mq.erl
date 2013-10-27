@@ -22,7 +22,7 @@ start() ->
         end, [], [mq_port, mq_host, mq_max_age]),
     MQAdapter = case application:get_env(mq_adapter) of
         {ok, Val} -> Val;
-        _ -> bmq
+        _ -> tinymq
     end,
     MQOptions1 = [{adapter, list_to_atom("boss_mq_adapter_"++atom_to_list(MQAdapter))}|MQOptions],
     start(MQOptions1).
@@ -47,7 +47,7 @@ pull(Channel, Timestamp) ->
 
 %% @spec pull( Channel::string(), Since::integer() | last | now, Timeout::integer() ) -> {ok, Timestamp, [Message]} | {error, Reason}
 %% @doc Pull messages from the specified `Channel' after `Since' (a timestamp returned from a previous `pull'). If no such messages
-%% are in the queue, blocks until a message is pushed to the queue, or until `Timeout' milliseconds have elapsed.
+%% are in the queue, blocks until a message is pushed to the queue, or until `Timeout' seconds have elapsed.
 pull(Channel, {MegaSecs, Secs, MicroSecs}, Timeout) ->
     pull(Channel, 1000 * 1000 * (1000 * 1000 * MegaSecs + Secs) + MicroSecs, Timeout);
 pull(Channel, Timestamp, Timeout) when is_list(Channel) ->

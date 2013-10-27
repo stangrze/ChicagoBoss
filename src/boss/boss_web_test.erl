@@ -9,18 +9,24 @@
 start([Application]) ->
     start([Application, "mock"]);
 start([Application, Adapter]) ->
-    run_tests([Application, Adapter|boss_files:test_list()]).
+    run_tests([Application, Adapter|boss_files:test_list(Application)]).
 
 bootstrap_test_env(Application, Adapter) ->
-    AdapterMod = list_to_atom("boss_db_adapter_"++Adapter),
+    DBOptions = lists:foldl(fun(OptName, Acc) ->
+                case application:get_env(OptName) of
+                    {ok, Val} -> [{OptName, Val}|Acc];
+                    _ -> Acc
+                end
+        end, [], [db_port, db_host, db_username, db_password, db_database]),
     ok = application:start(Application),
+    ControllerList = boss_files:web_controller_list(Application),
     {ok, RouterSupPid} = boss_router:start([{application, Application}, 
-            {controllers, boss_files:web_controller_list(Application)}]),
-    boss_db:start([{adapter, AdapterMod}]),
+            {controllers, ControllerList}]),
+    boss_db:start([{adapter, Adapter}|DBOptions]),
     boss_session:start(),
     boss_mq:start(),
     lists:map(fun(File) ->
-                {ok, _} = boss_compiler:compile(File, [])
+                {ok, _} = boss_compiler:compile(File, [{include_dirs, [boss_files:include_dir() | boss_env:get_env(boss, include_dirs, [])]}])
         end, boss_files:init_file_list(Application)),
     boss_news:start(),
     boss_mail:start([{driver, boss_mail_driver_mock}]),
@@ -33,15 +39,16 @@ bootstrap_test_env(Application, Adapter) ->
         router_sup_pid = RouterSupPid,
         translator_sup_pid = TranslatorSupPid,
         model_modules = boss_files:model_list(Application),
-        controller_modules = boss_files:web_controller_list(Application)
+        controller_modules = boss_files:web_controller_list(Application),
+        view_modules = boss_files:view_module_list(Application)
     }.
 
 % This function deliberately takes one argument so it can be invoked from the command-line.
 run_tests([Application, Adapter|TestList]) ->
-    AppInfo = bootstrap_test_env(list_to_atom(Application), Adapter),
+    AppInfo = bootstrap_test_env(list_to_atom(Application), list_to_atom(Adapter)),
     Pid = erlang:spawn(fun() -> app_info_loop(AppInfo) end),
     register(app_info, Pid),
-    io:format("~p~n", [TestList]),
+    io:format("Found tests: ~p~n", [TestList]),
     lists:map(fun(TestModule) ->
                 TestModuleAtom = list_to_atom(TestModule),
                 io:format("~nRunning: ~p~n", [TestModule]),
@@ -126,12 +133,22 @@ submit_form(FormName, FormValues, {_, Uri, _, ParseTree} = _Response, Assertions
 %% @doc This test retrieves the most recent email sent by the application to `ToAddress' with
 %% subject equal to `Subject'.
 read_email(ToAddress, Subject, Assertions, Continuations) ->
+    PushFun = fun() ->
+            boss_db:push(),
+            boss_mail_driver_mock:push()
+    end,
+    PopFun = fun() ->
+            boss_db:pop(),
+            boss_mail_driver_mock:pop()
+    end,
     case boss_mail_driver_mock:read(ToAddress, Subject) of
         undefined ->
-            boss_test:process_assertions_and_continuations(Assertions, Continuations, undefined);
+            boss_test:process_assertions_and_continuations(Assertions, Continuations, undefined, 
+                PushFun, PopFun, fun boss_db:dump/0);
         {Type, SubType, Headers, _, Body} ->
             {TextBody, HtmlBody} = parse_email_body(Type, SubType, Body),
-            boss_test:process_assertions_and_continuations(Assertions, Continuations, {Headers, TextBody, HtmlBody})
+            boss_test:process_assertions_and_continuations(Assertions, Continuations, {Headers, TextBody, HtmlBody}, 
+                PushFun, PopFun, fun boss_db:dump/0)
     end.
 
 % Internal
@@ -198,6 +215,8 @@ find_link_with_text(LinkName, [{<<"a">>, Attrs, Children}|Rest]) ->
         LinkName -> proplists:get_value(<<"href">>, Attrs);
         _ -> find_link_with_text(LinkName, Rest)
     end;
+find_link_with_text(LinkName, [{_OtherTag, _Attrs}|Rest]) ->
+    find_link_with_text(LinkName, Rest);
 find_link_with_text(LinkName, [{_OtherTag, _Attrs, []}|Rest]) ->
     find_link_with_text(LinkName, Rest);
 find_link_with_text(LinkName, [{_OtherTag, _Attrs, Children}|Rest]) when is_list(Children) ->
@@ -305,12 +324,13 @@ get_request_loop(AppInfo) ->
     receive
         {From, Uri, Headers} ->
             Req = make_request('GET', Uri, Headers),
+            FullUrl = Req:path(),
             [{_, RouterPid, _, _}] = supervisor:which_children(AppInfo#boss_app_info.router_sup_pid),
             [{_, TranslatorPid, _, _}] = supervisor:which_children(AppInfo#boss_app_info.translator_sup_pid),
             Result = boss_web_controller:process_request(AppInfo#boss_app_info {
                     router_pid = RouterPid, translator_pid = TranslatorPid }, 
-                Req, testing, Uri, undefined),
-            From ! {self(), Uri, Result};
+                Req, testing, FullUrl),
+            From ! {self(), FullUrl, Result};
         Other ->
             error_logger:error_msg("Unexpected message in get_request_loop: ~p~n", [Other])
     end.
@@ -326,10 +346,11 @@ post_request_loop(AppInfo) ->
             [{_, TranslatorPid, _, _}] = supervisor:which_children(AppInfo#boss_app_info.translator_sup_pid),
             Req = make_request('POST', Uri, 
                 [{"Content-Encoding", "application/x-www-form-urlencoded"} | Headers]),
+            FullUrl = Req:path(),
             Result = boss_web_controller:process_request(AppInfo#boss_app_info{
                     router_pid = RouterPid, translator_pid = TranslatorPid }, 
-                Req, testing, Uri, undefined),
-            From ! {self(), Uri, Result};
+                Req, testing, FullUrl, undefined),
+            From ! {self(), FullUrl, Result};
         Other ->
             error_logger:error_msg("Unexpected message in post_request_loop: ~p~n", [Other])
     end.
@@ -341,18 +362,35 @@ make_request(Method, Uri, Headers) ->
     simple_bridge:make_request(mochiweb_request_bridge, Req).
 
 receive_response(RequesterPid, Assertions, Continuations) ->
+    PushFun = fun() ->
+            boss_db:push(),
+            boss_mail_driver_mock:push()
+    end,
+    PopFun = fun() ->
+            boss_db:pop(),
+            boss_mail_driver_mock:pop()
+    end,
     receive
         {RequesterPid, Uri, {Status, ResponseHeaders, ResponseBody}} ->
             ParsedResponseBody = case ResponseBody of
                 [] -> [];
-                Other -> mochiweb_html:parse(Other)
+                Other -> parse(ResponseHeaders, Other)
             end,
             exit(RequesterPid, kill),
             ParsedResponse = {Status, Uri, ResponseHeaders, ParsedResponseBody},
-            boss_test:process_assertions_and_continuations(Assertions, Continuations, ParsedResponse);
+            boss_test:process_assertions_and_continuations(Assertions, Continuations, ParsedResponse, 
+                PushFun, PopFun, fun boss_db:dump/0);
         {'EXIT', _From, normal} ->
             receive_response(RequesterPid, Assertions, Continuations);
         Other ->
             error_logger:error_msg("Unexpected message in receive_response: ~p~n", [Other]),
             receive_response(RequesterPid, Assertions, Continuations)
+    end.
+
+parse([], Body) ->
+    mochiweb_html:parse([<<"<html>">>, Body, <<"</html>">>]);
+parse([Head|Tail], Body) ->
+    case Head of
+        {"Content-Type", "application/json"} -> mochijson2:decode(Body);
+        _ -> parse(Tail, Body)
     end.

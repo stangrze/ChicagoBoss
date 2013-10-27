@@ -2,7 +2,7 @@
 %% @doc Generate documentation for the Chicago Boss external API.
 
 -module(boss_doc).
--compile(export_all).
+-export([run/0, run/2]).
 -include("xmerl.hrl").
 
 run() ->
@@ -52,21 +52,24 @@ module_name_from_template(File) ->
 
 %% @spec get_vars( Template::string() ) -> [{Key::atom(), Value}]
 get_vars("api-view.html", _InDir) ->
-    {erlydtl_filters, EDoc} = edoc:get_doc("src/erlydtl/erlydtl_filters.erl", []),
+    {erlydtl_filters, EDoc} = edoc:get_doc("deps/erlydtl/src/erlydtl_filters.erl", []),
     Functions = extract_function_docs(EDoc),
     [{filters, Functions}];
 get_vars("api-record.html", InDir) ->
+    %% NOTE: it is question if we really want to make edoc
+    %% from trivial_boss_record by boss_model_manager or
+    %% via boss_record_compiler...
     {boss_record, EDoc} = boss_record_compiler:edoc_module(filename:join([InDir, "trivial_boss_record.erl"]), 
         [{private, true}, {hidden, true}]),
     [{functions, extract_function_docs(EDoc)}];
 get_vars("api-db.html", _InDir) ->
-    {boss_db, EDoc} = edoc:get_doc("src/boss/boss_db.erl", []),
+    {boss_db, EDoc} = edoc:get_doc("deps/boss_db/src/boss_db.erl", []),
     [{functions, extract_function_docs(EDoc)}];
 get_vars("api-mq.html", _InDir) ->
     {boss_mq, EDoc} = edoc:get_doc("src/boss/boss_mq.erl", []),
     [{functions, extract_function_docs(EDoc)}];
 get_vars("api-news.html", _InDir) ->
-    {boss_news, EDoc} = edoc:get_doc("src/boss/boss_news.erl", []),
+    {boss_news, EDoc} = edoc:get_doc("deps/boss_db/src/boss_news.erl", []),
     [{functions, extract_function_docs(EDoc)}];
 get_vars("api-test.html", _InDir) ->
     {boss_web_test, EDoc1} = edoc:get_doc("src/boss/boss_web_test.erl", []),
